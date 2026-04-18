@@ -62,8 +62,8 @@ Si no entiendes el mensaje responde: {"error": "no entendido"}`
 }
 
 client.on('qr', (qr) => {
-    qrcode.generate(qr, { small: true })
-    console.log('Escanea el QR con WhatsApp')
+    const qrUrl = `https://api.qrserver.com/v1/create-qr-code/?size=300x300&data=${encodeURIComponent(qr)}`
+    console.log('📱 Escanea el QR aquí:', qrUrl)
 })
 
 client.on('ready', () => {
