@@ -3,7 +3,9 @@ require('dotenv').config()
 const dns = require('dns')
 dns.setDefaultResultOrder('ipv4first')
 
-const { Client, LocalAuth } = require('whatsapp-web.js')
+const { Client, RemoteAuth } = require('whatsapp-web.js')
+const { MongoStore } = require('wwebjs-mongo')
+const mongoose = require('mongoose')
 const fs = require('fs')
 const OpenAI = require('openai')
 const { MongoClient, ObjectId } = require('mongodb')
@@ -12,26 +14,23 @@ const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY })
 
 let db
 let recordatoriosCol
+let client
 
 async function conectarMongo() {
-    const cliente = new MongoClient(process.env.MONGODB_URI)
-    await cliente.connect()
-    db = cliente.db('wsp-bot')
+    // ✅ Conexión nativa para recordatorios
+    const clienteMongo = new MongoClient(process.env.MONGODB_URI)
+    await clienteMongo.connect()
+    db = clienteMongo.db('wsp-bot')
     recordatoriosCol = db.collection('recordatorios')
 
     await recordatoriosCol.createIndex({ numero: 1 })
     await recordatoriosCol.createIndex({ enviado: 1, tiempo: 1 })
 
+    // ✅ Conexión mongoose para sesión de WhatsApp
+    await mongoose.connect(process.env.MONGODB_URI)
+
     console.log('✅ MongoDB conectado!')
 }
-
-const client = new Client({
-    authStrategy: new LocalAuth(),
-    puppeteer: {
-        headless: true,
-        args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-gpu', '--disable-dev-shm-usage']
-    }
-})
 
 function limpiarJSON(texto) {
     return texto
@@ -44,7 +43,6 @@ function horaActualChile() {
     return new Date().toLocaleString('es-CL', { timeZone: 'America/Santiago' })
 }
 
-// ✅ Calcular próximo tiempo para recordatorio repetitivo
 function calcularProximoTiempo(rec) {
     const ahora = new Date()
     const ahoraChile = new Date(ahora.toLocaleString('en-US', { timeZone: 'America/Santiago' }))
@@ -54,7 +52,6 @@ function calcularProximoTiempo(rec) {
     let candidato = new Date(ahoraChile)
     candidato.setHours(hora, minuto, 0, 0)
 
-    // Si ya pasó hoy, empezar desde mañana
     if (candidato <= ahoraChile) {
         candidato.setDate(candidato.getDate() + 1)
     }
@@ -64,18 +61,15 @@ function calcularProximoTiempo(rec) {
         'jueves': 4, 'viernes': 5, 'sábado': 6
     }
 
-    // Buscar el próximo día válido
     for (let i = 0; i < 7; i++) {
         const diaCandidato = candidato.getDay()
         const nombreDia = Object.keys(diasSemana).find(k => diasSemana[k] === diaCandidato)
 
-        // Verificar si este día está en diasSaltar
         const esDiaSaltado = rec.diasSaltar && rec.diasSaltar.some(d => {
             const fechaSaltar = new Date(d)
             return fechaSaltar.toDateString() === candidato.toDateString()
         })
 
-        // Verificar si este día de la semana está permitido
         const esDiaPermitido = rec.diasSemana.includes('todos') ||
             rec.diasSemana.includes(nombreDia)
 
@@ -92,7 +86,6 @@ function calcularProximoTiempo(rec) {
 async function interpretarMensaje(texto, recordatoriosRepetitivos) {
     const horaChile = horaActualChile()
 
-    // Preparar lista de repetitivos para contexto
     const listaRepetitivos = recordatoriosRepetitivos.length > 0
         ? recordatoriosRepetitivos.map((r, i) =>
             `${i + 1}. "${r.mensaje}" - ${r.diasSemana.join(', ')} a las ${r.horaRepeticion}`
@@ -151,7 +144,6 @@ IMPORTANTE para fechasSaltar: usa fechas reales en formato YYYY-MM-DD basándote
     }
 }
 
-// ✅ Enviar recordatorio con contador de aviso
 async function enviarRecordatorio(rec) {
     const aviso = rec.aviso || 1
     const avisoTexto = aviso === 1 ? '' : `\n_(${aviso}° aviso)_`
@@ -171,7 +163,7 @@ async function enviarRecordatorio(rec) {
     try {
         const sent = await client.sendMessage(
             rec.numero,
-            `⌚ *Recordatorio:* ${rec.mensaje}${avisoTexto}\n\n👍 Confirmar | ❤️ +10 min | ⏰ +30 min`
+            `⏰ *Recordatorio:* ${rec.mensaje}${avisoTexto}\n\n👍 Confirmar | ❤️ +10 min | ⏰ +30 min`
         )
         await recordatoriosCol.updateOne(
             { _id: rec._id },
@@ -182,246 +174,7 @@ async function enviarRecordatorio(rec) {
     }
 }
 
-// ✅ Revisar recordatorios cada 10 segundos
-setInterval(async () => {
-    if (!recordatoriosCol) return
-
-    const ahora = Date.now()
-
-    // Recordatorios normales pendientes
-    const pendientes = await recordatoriosCol.find({
-        enviado: false,
-        tiempo: { $lte: ahora },
-        completado: { $ne: true }
-    }).toArray()
-
-    for (const rec of pendientes) {
-        await enviarRecordatorio(rec)
-    }
-
-    // Recordatorios esperando reacción hace más de 10 minutos
-    const sinReaccion = await recordatoriosCol.find({
-        esperandoReaccion: true,
-        ultimoAviso: { $lte: ahora - 10 * 60 * 1000 }
-    }).toArray()
-
-    for (const rec of sinReaccion) {
-        await recordatoriosCol.updateOne(
-            { _id: rec._id },
-            {
-                $set: {
-                    enviado: false,
-                    esperandoReaccion: false,
-                    aviso: (rec.aviso || 1) + 1
-                }
-            }
-        )
-    }
-}, 10000)
-
-// ✅ Escuchar reacciones de emojis
-client.on('message_reaction', async (reaction) => {
-    const emoji = reaction.reaction
-    const msgId = reaction.msgId._serialized
-    const numero = reaction.senderId
-
-    const rec = await recordatoriosCol.findOne({ msgId, esperandoReaccion: true })
-    if (!rec) return
-
-    // 👍 Confirmar
-    if (emoji === '👍') {
-        await recordatoriosCol.updateOne(
-            { _id: rec._id },
-            { $set: { esperandoReaccion: false, completado: true } }
-        )
-
-        // Si es repetitivo, programar el próximo
-        if (rec.repetitivo) {
-            const proximoTiempo = calcularProximoTiempo(rec)
-            if (proximoTiempo) {
-                const horaAviso = new Date(proximoTiempo).toLocaleString('es-CL', {
-                    timeZone: 'America/Santiago',
-                    weekday: 'long',
-                    hour: '2-digit',
-                    minute: '2-digit'
-                })
-                await recordatoriosCol.insertOne({
-                    ...rec,
-                    _id: new ObjectId(),
-                    enviado: false,
-                    esperandoReaccion: false,
-                    completado: false,
-                    tiempo: proximoTiempo,
-                    aviso: 1,
-                    msgId: null,
-                    ultimoAviso: null
-                })
-                await client.sendMessage(numero, `✅ ¡Perfecto! Recordatorio completado.\n🔁 Próximo aviso: ${horaAviso}`)
-            }
-        } else {
-            await client.sendMessage(numero, '✅ ¡Perfecto! Recordatorio completado.')
-        }
-        return
-    }
-
-    // ❤️ Posponer 10 minutos
-    if (emoji === '❤️') {
-        await recordatoriosCol.updateOne(
-            { _id: rec._id },
-            {
-                $set: {
-                    esperandoReaccion: false,
-                    enviado: false,
-                    tiempo: Date.now() + 10 * 60 * 1000,
-                    aviso: 1
-                }
-            }
-        )
-        await client.sendMessage(numero, '❤️ Ok, te recuerdo en 10 minutos.')
-        return
-    }
-
-    // ⏰ Posponer 30 minutos
-    if (emoji === '⏰') {
-        await recordatoriosCol.updateOne(
-            { _id: rec._id },
-            {
-                $set: {
-                    esperandoReaccion: false,
-                    enviado: false,
-                    tiempo: Date.now() + 30 * 60 * 1000,
-                    aviso: 1
-                }
-            }
-        )
-        await client.sendMessage(numero, '⏰ Ok, te recuerdo en 30 minutos.')
-        return
-    }
-})
-
-client.on('qr', (qr) => {
-    const qrUrl = `https://api.qrserver.com/v1/create-qr-code/?size=300x300&data=${encodeURIComponent(qr)}`
-    console.log('📱 Escanea el QR aquí:', qrUrl)
-})
-
-client.on('ready', () => {
-    console.log('✅ Bot conectado!')
-})
-
-client.on('message', async (msg) => {
-    if (msg.fromMe) return
-
-    const numero = msg.from
-    const texto = msg.body.trim().toLowerCase()
-
-    // ✅ Ver lista
-    if (texto === '!lista') {
-        const normales = await recordatoriosCol.find({
-            numero,
-            enviado: false,
-            completado: { $ne: true },
-            repetitivo: { $ne: true }
-        }).toArray()
-
-        const repetitivos = await recordatoriosCol.find({
-            numero,
-            repetitivo: true,
-            cancelado: { $ne: true }
-        }).toArray()
-
-        let respuesta = ''
-
-        if (normales.length === 0 && repetitivos.length === 0) {
-            msg.reply('📭 No tienes recordatorios pendientes.')
-            return
-        }
-
-        if (normales.length > 0) {
-            const lista = normales.map((r, i) => {
-                const fecha = new Date(r.tiempo).toLocaleString('es-CL', {
-                    timeZone: 'America/Santiago',
-                    hour: '2-digit',
-                    minute: '2-digit'
-                })
-                return `${i + 1}. "${r.mensaje}" - 🕐 ${fecha}`
-            }).join('\n')
-            respuesta += `📋 *Recordatorios pendientes:*\n${lista}`
-        }
-
-        if (repetitivos.length > 0) {
-            const listaRep = repetitivos.map((r, i) => {
-                const dias = r.diasSemana.includes('todos') ? 'todos los días' : r.diasSemana.join(', ')
-                return `${i + 1}. "${r.mensaje}" - ${dias} a las ${r.horaRepeticion}`
-            }).join('\n')
-            respuesta += `${respuesta ? '\n\n' : ''}🔁 *Recordatorios repetitivos:*\n${listaRep}`
-        }
-
-        msg.reply(respuesta)
-        return
-    }
-
-    // ✅ Cancelar por comando
-    if (texto.startsWith('!cancelar')) {
-        const num = parseInt(texto.split(' ')[1]) - 1
-        const pendientes = await recordatoriosCol.find({
-            numero,
-            enviado: false,
-            completado: { $ne: true },
-            repetitivo: { $ne: true }
-        }).toArray()
-
-        if (pendientes[num]) {
-            await recordatoriosCol.updateOne(
-                { _id: pendientes[num]._id },
-                { $set: { enviado: true, completado: true } }
-            )
-            msg.reply(`🗑️ Recordatorio cancelado: "${pendientes[num].mensaje}"`)
-        } else {
-            msg.reply('⚠️ No encontré ese recordatorio. Usa !lista para ver los pendientes.')
-        }
-        return
-    }
-
-    // ✅ Procesar audio
-    if (msg.type === 'ptt' || msg.type === 'audio') {
-        msg.reply('🎤 Procesando tu audio...')
-        const audioPath = `audio_${Date.now()}.ogg`
-        try {
-            const media = await msg.downloadMedia()
-            const audioBuffer = Buffer.from(media.data, 'base64')
-            fs.writeFileSync(audioPath, audioBuffer)
-
-            const transcripcion = await openai.audio.transcriptions.create({
-                file: fs.createReadStream(audioPath),
-                model: 'whisper-1',
-                language: 'es'
-            })
-
-            const textoAudio = transcripcion.text
-            console.log('🎤 Transcripción:', textoAudio)
-
-            await procesarMensaje(msg, numero, textoAudio)
-
-        } catch (err) {
-            console.error('❌ Error procesando audio:', err)
-            msg.reply('Hubo un error procesando el audio. Intenta de nuevo.')
-        } finally {
-            if (fs.existsSync(audioPath)) {
-                fs.unlinkSync(audioPath)
-            }
-        }
-        return
-    }
-
-    // ✅ Procesar texto normal
-    if (msg.type === 'chat') {
-        await procesarMensaje(msg, numero, texto)
-    }
-})
-
-// ✅ Función central para procesar mensajes (texto y audio)
 async function procesarMensaje(msg, numero, texto) {
-    // Obtener repetitivos activos para contexto
     const repetitivosActivos = await recordatoriosCol.find({
         numero,
         repetitivo: true,
@@ -466,7 +219,6 @@ async function procesarMensaje(msg, numero, texto) {
 
     // ✅ Recordatorio repetitivo
     if (resultado.tipo === 'repetitivo') {
-        // Guardar plantilla del repetitivo
         const plantilla = {
             numero,
             mensaje: resultado.mensaje,
@@ -482,7 +234,6 @@ async function procesarMensaje(msg, numero, texto) {
             msgId: null
         }
 
-        // Calcular próximo tiempo
         const proximoTiempo = calcularProximoTiempo(plantilla)
         if (!proximoTiempo) {
             msg.reply('⚠️ No pude calcular el próximo aviso. Intenta de nuevo.')
@@ -516,7 +267,6 @@ async function procesarMensaje(msg, numero, texto) {
             cancelado: { $ne: true }
         }).toArray()
 
-        // Buscar el repetitivo más parecido al mensajeBuscado
         const encontrado = repetitivos.find(r =>
             r.mensaje.toLowerCase().includes(resultado.mensajeBuscado.toLowerCase()) ||
             resultado.mensajeBuscado.toLowerCase().includes(r.mensaje.toLowerCase())
@@ -585,15 +335,267 @@ async function procesarMensaje(msg, numero, texto) {
     }
 }
 
+async function iniciar() {
+    await conectarMongo()
+
+    const store = new MongoStore({ mongoose })
+
+    // ✅ Client definido aquí para usar RemoteAuth
+    client = new Client({
+        authStrategy: new RemoteAuth({
+            store,
+            backupSyncIntervalMs: 300000
+        }),
+        puppeteer: {
+            headless: true,
+            args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-gpu', '--disable-dev-shm-usage']
+        }
+    })
+
+    // ✅ Revisar recordatorios cada 10 segundos
+    setInterval(async () => {
+        if (!recordatoriosCol) return
+
+        const ahora = Date.now()
+
+        const pendientes = await recordatoriosCol.find({
+            enviado: false,
+            tiempo: { $lte: ahora },
+            completado: { $ne: true }
+        }).toArray()
+
+        for (const rec of pendientes) {
+            await enviarRecordatorio(rec)
+        }
+
+        const sinReaccion = await recordatoriosCol.find({
+            esperandoReaccion: true,
+            ultimoAviso: { $lte: ahora - 10 * 60 * 1000 }
+        }).toArray()
+
+        for (const rec of sinReaccion) {
+            await recordatoriosCol.updateOne(
+                { _id: rec._id },
+                {
+                    $set: {
+                        enviado: false,
+                        esperandoReaccion: false,
+                        aviso: (rec.aviso || 1) + 1
+                    }
+                }
+            )
+        }
+    }, 10000)
+
+    client.on('qr', (qr) => {
+        const qrUrl = `https://api.qrserver.com/v1/create-qr-code/?size=300x300&data=${encodeURIComponent(qr)}`
+        console.log('📱 Escanea el QR aquí:', qrUrl)
+    })
+
+    client.on('ready', () => {
+        console.log('✅ Bot conectado!')
+    })
+
+    client.on('remote_session_saved', () => {
+        console.log('✅ Sesión guardada en MongoDB!')
+    })
+
+    client.on('message_reaction', async (reaction) => {
+        const emoji = reaction.reaction
+        const msgId = reaction.msgId._serialized
+        const numero = reaction.senderId
+
+        const rec = await recordatoriosCol.findOne({ msgId, esperandoReaccion: true })
+        if (!rec) return
+
+        // 👍 Confirmar
+        if (emoji === '👍') {
+            await recordatoriosCol.updateOne(
+                { _id: rec._id },
+                { $set: { esperandoReaccion: false, completado: true } }
+            )
+
+            if (rec.repetitivo) {
+                const proximoTiempo = calcularProximoTiempo(rec)
+                if (proximoTiempo) {
+                    const horaAviso = new Date(proximoTiempo).toLocaleString('es-CL', {
+                        timeZone: 'America/Santiago',
+                        weekday: 'long',
+                        hour: '2-digit',
+                        minute: '2-digit'
+                    })
+                    await recordatoriosCol.insertOne({
+                        ...rec,
+                        _id: new ObjectId(),
+                        enviado: false,
+                        esperandoReaccion: false,
+                        completado: false,
+                        tiempo: proximoTiempo,
+                        aviso: 1,
+                        msgId: null,
+                        ultimoAviso: null
+                    })
+                    await client.sendMessage(numero, `✅ ¡Perfecto! Recordatorio completado.\n🔁 Próximo aviso: ${horaAviso}`)
+                }
+            } else {
+                await client.sendMessage(numero, '✅ ¡Perfecto! Recordatorio completado.')
+            }
+            return
+        }
+
+        // ❤️ Posponer 10 minutos
+        if (emoji === '❤️') {
+            await recordatoriosCol.updateOne(
+                { _id: rec._id },
+                {
+                    $set: {
+                        esperandoReaccion: false,
+                        enviado: false,
+                        tiempo: Date.now() + 10 * 60 * 1000,
+                        aviso: 1
+                    }
+                }
+            )
+            await client.sendMessage(numero, '❤️ Ok, te recuerdo en 10 minutos.')
+            return
+        }
+
+        // ⏰ Posponer 30 minutos
+        if (emoji === '⏰') {
+            await recordatoriosCol.updateOne(
+                { _id: rec._id },
+                {
+                    $set: {
+                        esperandoReaccion: false,
+                        enviado: false,
+                        tiempo: Date.now() + 30 * 60 * 1000,
+                        aviso: 1
+                    }
+                }
+            )
+            await client.sendMessage(numero, '⏰ Ok, te recuerdo en 30 minutos.')
+            return
+        }
+    })
+
+    client.on('message', async (msg) => {
+        if (msg.fromMe) return
+
+        const numero = msg.from
+        const texto = msg.body.trim().toLowerCase()
+
+        // ✅ Ver lista
+        if (texto === '!lista') {
+            const normales = await recordatoriosCol.find({
+                numero,
+                enviado: false,
+                completado: { $ne: true },
+                repetitivo: { $ne: true }
+            }).toArray()
+
+            const repetitivos = await recordatoriosCol.find({
+                numero,
+                repetitivo: true,
+                cancelado: { $ne: true }
+            }).toArray()
+
+            let respuesta = ''
+
+            if (normales.length === 0 && repetitivos.length === 0) {
+                msg.reply('📭 No tienes recordatorios pendientes.')
+                return
+            }
+
+            if (normales.length > 0) {
+                const lista = normales.map((r, i) => {
+                    const fecha = new Date(r.tiempo).toLocaleString('es-CL', {
+                        timeZone: 'America/Santiago',
+                        hour: '2-digit',
+                        minute: '2-digit'
+                    })
+                    return `${i + 1}. "${r.mensaje}" - 🕐 ${fecha}`
+                }).join('\n')
+                respuesta += `📋 *Recordatorios pendientes:*\n${lista}`
+            }
+
+            if (repetitivos.length > 0) {
+                const listaRep = repetitivos.map((r, i) => {
+                    const dias = r.diasSemana.includes('todos') ? 'todos los días' : r.diasSemana.join(', ')
+                    return `${i + 1}. "${r.mensaje}" - ${dias} a las ${r.horaRepeticion}`
+                }).join('\n')
+                respuesta += `${respuesta ? '\n\n' : ''}🔁 *Recordatorios repetitivos:*\n${listaRep}`
+            }
+
+            msg.reply(respuesta)
+            return
+        }
+
+        // ✅ Cancelar por comando
+        if (texto.startsWith('!cancelar')) {
+            const num = parseInt(texto.split(' ')[1]) - 1
+            const pendientes = await recordatoriosCol.find({
+                numero,
+                enviado: false,
+                completado: { $ne: true },
+                repetitivo: { $ne: true }
+            }).toArray()
+
+            if (pendientes[num]) {
+                await recordatoriosCol.updateOne(
+                    { _id: pendientes[num]._id },
+                    { $set: { enviado: true, completado: true } }
+                )
+                msg.reply(`🗑️ Recordatorio cancelado: "${pendientes[num].mensaje}"`)
+            } else {
+                msg.reply('⚠️ No encontré ese recordatorio. Usa !lista para ver los pendientes.')
+            }
+            return
+        }
+
+        // ✅ Audio
+        if (msg.type === 'ptt' || msg.type === 'audio') {
+            msg.reply('🎤 Procesando tu audio...')
+            const audioPath = `audio_${Date.now()}.ogg`
+            try {
+                const media = await msg.downloadMedia()
+                const audioBuffer = Buffer.from(media.data, 'base64')
+                fs.writeFileSync(audioPath, audioBuffer)
+
+                const transcripcion = await openai.audio.transcriptions.create({
+                    file: fs.createReadStream(audioPath),
+                    model: 'whisper-1',
+                    language: 'es'
+                })
+
+                const textoAudio = transcripcion.text
+                console.log('🎤 Transcripción:', textoAudio)
+
+                await procesarMensaje(msg, numero, textoAudio)
+
+            } catch (err) {
+                console.error('❌ Error procesando audio:', err)
+                msg.reply('Hubo un error procesando el audio. Intenta de nuevo.')
+            } finally {
+                if (fs.existsSync(audioPath)) {
+                    fs.unlinkSync(audioPath)
+                }
+            }
+            return
+        }
+
+        // ✅ Texto normal
+        if (msg.type === 'chat') {
+            await procesarMensaje(msg, numero, texto)
+        }
+    })
+
+    client.initialize()
+}
+
 process.on('SIGINT', async () => {
     console.log('🛑 Cerrando bot...')
     await client.destroy()
     process.exit(0)
 })
-
-async function iniciar() {
-    await conectarMongo()
-    client.initialize()
-}
 
 iniciar()
