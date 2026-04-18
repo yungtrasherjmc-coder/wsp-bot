@@ -1,10 +1,10 @@
-﻿FROM node:20.19.0
+﻿FROM ghcr.io/puppeteer/puppeteer:latest
 
 WORKDIR /app
 
 COPY package*.json ./
 
-RUN npm install --unsafe-perm
+RUN npm install
 
 COPY . .
 
