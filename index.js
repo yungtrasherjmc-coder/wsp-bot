@@ -31,7 +31,6 @@ async function conectarMongo() {
     console.log('✅ MongoDB conectado!')
 }
 
-// ✅ Archivos de Chrome que no necesitamos guardar
 const ARCHIVOS_IGNORAR = [
     'SingletonCookie',
     'SingletonLock',
@@ -40,29 +39,34 @@ const ARCHIVOS_IGNORAR = [
     'BrowserMetrics-spare.pma',
     'GPUPersistentCache',
     'GraphiteDawnCache',
-    'HistorySearch',
-    'OnDeviceHeadSuggestModel',
-    'WasmTtsEngine',
-    'WidevineCdm',
+]
+
+const CARPETAS_IGNORAR = [
+    'Cache',
+    'Code Cache',
+    'ScriptCache',
+    'Service Worker',
     'component_crx_cache',
     'extensions_crx_cache',
     'segmentation_platform',
     'hyphen-data',
+    'Safe Browsing',
+    'Subresource Filter',
+    'TranslateKit',
+    'WasmTtsEngine',
+    'WidevineCdm',
     'ZxcvbnData',
     'Variations',
-    'TranslateKit',
-    'Subresource Filter',
-    'Safe Browsing',
+    'OnDeviceHeadSuggestModel',
+    'HistorySearch',
     'OriginTrials',
     'PKIMetadata',
     'PKIMetadataFastpush',
     'MEIPreload',
-    'first_party_sets.db',
-    'first_party_sets.db-journal'
+    'NativeMessagingHosts',
 ]
 
-// ✅ Tamaño máximo por archivo: 1MB
-const MAX_FILE_SIZE = 1 * 1024 * 1024
+const MAX_FILE_SIZE = 5 * 1024 * 1024 // 5MB
 
 async function guardarSesionEnMongo() {
     try {
@@ -76,6 +80,7 @@ async function guardarSesionEnMongo() {
             const items = fs.readdirSync(dir)
             for (const item of items) {
                 if (ARCHIVOS_IGNORAR.includes(item)) continue
+                if (CARPETAS_IGNORAR.includes(item)) continue
 
                 const fullPath = path.join(dir, item)
                 const relativePath = base ? `${base}/${item}` : item
@@ -85,15 +90,14 @@ async function guardarSesionEnMongo() {
                     if (stat.isDirectory()) {
                         leerDirectorio(fullPath, relativePath)
                     } else {
-                        // ✅ Ignorar archivos mayores a 1MB
                         if (stat.size > MAX_FILE_SIZE) {
-                            console.log(`⚠️ Archivo muy grande ignorado: ${relativePath} (${Math.round(stat.size / 1024)}KB)`)
+                            console.log(`⚠️ Ignorado por tamaño: ${relativePath} (${Math.round(stat.size / 1024)}KB)`)
                             continue
                         }
                         archivos[relativePath] = fs.readFileSync(fullPath).toString('base64')
                     }
                 } catch (e) {
-                    console.log(`⚠️ Ignorando archivo: ${relativePath}`)
+                    console.log(`⚠️ Ignorando: ${relativePath}`)
                 }
             }
         }
@@ -101,6 +105,7 @@ async function guardarSesionEnMongo() {
         leerDirectorio(SESSION_PATH)
 
         console.log(`📦 Guardando ${Object.keys(archivos).length} archivos en MongoDB...`)
+        console.log('📋 Archivos:', Object.keys(archivos))
 
         await sesionCol.updateOne(
             { _id: 'sesion' },
