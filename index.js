@@ -340,17 +340,17 @@ async function iniciar() {
 
     const store = new MongoStore({ mongoose })
 
-    // ✅ Client definido aquí para usar RemoteAuth
-    client = new Client({
-        authStrategy: new RemoteAuth({
-            store,
-            backupSyncIntervalMs: 300000
-        }),
-        puppeteer: {
-            headless: true,
-            args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-gpu', '--disable-dev-shm-usage']
-        }
-    })
+client = new Client({
+    authStrategy: new RemoteAuth({
+        store,
+        backupSyncIntervalMs: 300000,
+        dataPath: '/tmp/.wwebjs_auth' // ✅ usar /tmp que sí existe en Railway
+    }),
+    puppeteer: {
+        headless: true,
+        args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-gpu', '--disable-dev-shm-usage']
+    }
+})
 
     // ✅ Revisar recordatorios cada 10 segundos
     setInterval(async () => {
