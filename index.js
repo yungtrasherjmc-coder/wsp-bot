@@ -136,9 +136,6 @@ async function guardarSesionEnMongo() {
             leerDirectorio(path.join(SESSION_PATH, carpeta), carpeta)
         }
 
-        console.log(`📦 Guardando ${Object.keys(archivos).length} archivos en MongoDB...`)
-        console.log('📋 Archivos:', Object.keys(archivos))
-
         await sesionCol.updateOne(
             { _id: 'sesion' },
             { $set: { archivos, updatedAt: new Date() } },
