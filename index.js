@@ -338,19 +338,25 @@ async function procesarMensaje(msg, numero, texto) {
 async function iniciar() {
     await conectarMongo()
 
+    // ✅ Crear carpeta temporal si no existe
+    const authPath = '/tmp/.wwebjs_auth'
+    if (!fs.existsSync(authPath)) {
+        fs.mkdirSync(authPath, { recursive: true })
+    }
+
     const store = new MongoStore({ mongoose })
 
-client = new Client({
-    authStrategy: new RemoteAuth({
-        store,
-        backupSyncIntervalMs: 300000,
-        dataPath: '/tmp/.wwebjs_auth' // ✅ usar /tmp que sí existe en Railway
-    }),
-    puppeteer: {
-        headless: true,
-        args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-gpu', '--disable-dev-shm-usage']
-    }
-})
+    client = new Client({
+        authStrategy: new RemoteAuth({
+            store,
+            backupSyncIntervalMs: 300000,
+            dataPath: authPath
+        }),
+        puppeteer: {
+            headless: true,
+            args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-gpu', '--disable-dev-shm-usage']
+        }
+    })
 
     // ✅ Revisar recordatorios cada 10 segundos
     setInterval(async () => {
