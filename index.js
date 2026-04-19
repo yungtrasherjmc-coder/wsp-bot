@@ -76,25 +76,55 @@ async function guardarSesionEnMongo() {
         }
 
         const archivos = {}
-        const leerDirectorio = (dir, base = '') => {
+        const MAX_FILE_SIZE = 5 * 1024 * 1024 // 5MB
+
+        const CARPETAS_IMPORTANTES = [
+            'Default/Local Storage',
+            'Default/Session Storage', 
+            'Default/IndexedDB',
+        ]
+
+        const ARCHIVOS_IMPORTANTES = [
+            'Default/Cookies',
+            'Default/Cookies-journal',
+            'Default/Web Data',
+            'Default/Web Data-journal',
+            'Default/Login Data',
+            'Default/Login Data-journal',
+            'Local State',
+            'Default/Preferences',
+        ]
+
+        // ✅ Guardar archivos importantes directos
+        for (const archivo of ARCHIVOS_IMPORTANTES) {
+            const fullPath = path.join(SESSION_PATH, archivo)
+            try {
+                if (fs.existsSync(fullPath)) {
+                    const stat = fs.statSync(fullPath)
+                    if (stat.size <= MAX_FILE_SIZE) {
+                        archivos[archivo] = fs.readFileSync(fullPath).toString('base64')
+                    }
+                }
+            } catch (e) {
+                console.log(`⚠️ Ignorando: ${archivo}`)
+            }
+        }
+
+        // ✅ Guardar carpetas importantes recursivamente
+        const leerDirectorio = (dir, base) => {
+            if (!fs.existsSync(dir)) return
             const items = fs.readdirSync(dir)
             for (const item of items) {
-                if (ARCHIVOS_IGNORAR.includes(item)) continue
-                if (CARPETAS_IGNORAR.includes(item)) continue
-
                 const fullPath = path.join(dir, item)
-                const relativePath = base ? `${base}/${item}` : item
-
+                const relativePath = `${base}/${item}`
                 try {
                     const stat = fs.statSync(fullPath)
                     if (stat.isDirectory()) {
                         leerDirectorio(fullPath, relativePath)
                     } else {
-                        if (stat.size > MAX_FILE_SIZE) {
-                            console.log(`⚠️ Ignorado por tamaño: ${relativePath} (${Math.round(stat.size / 1024)}KB)`)
-                            continue
+                        if (stat.size <= MAX_FILE_SIZE) {
+                            archivos[relativePath] = fs.readFileSync(fullPath).toString('base64')
                         }
-                        archivos[relativePath] = fs.readFileSync(fullPath).toString('base64')
                     }
                 } catch (e) {
                     console.log(`⚠️ Ignorando: ${relativePath}`)
@@ -102,7 +132,9 @@ async function guardarSesionEnMongo() {
             }
         }
 
-        leerDirectorio(SESSION_PATH)
+        for (const carpeta of CARPETAS_IMPORTANTES) {
+            leerDirectorio(path.join(SESSION_PATH, carpeta), carpeta)
+        }
 
         console.log(`📦 Guardando ${Object.keys(archivos).length} archivos en MongoDB...`)
         console.log('📋 Archivos:', Object.keys(archivos))
