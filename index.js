@@ -353,7 +353,7 @@ async function iniciar() {
         authStrategy: new RemoteAuth({
             store,
             backupSyncIntervalMs: 300000,
-            dataPath: authPath
+            dataPath: '/tmp' // ✅ cambiar a solo /tmp
         }),
         puppeteer: {
             headless: true,
