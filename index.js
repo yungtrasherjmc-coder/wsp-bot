@@ -3,10 +3,9 @@ require('dotenv').config()
 const dns = require('dns')
 dns.setDefaultResultOrder('ipv4first')
 
-const { Client, RemoteAuth } = require('whatsapp-web.js')
-const { MongoStore } = require('wwebjs-mongo')
-const mongoose = require('mongoose')
+const { Client, LocalAuth } = require('whatsapp-web.js')
 const fs = require('fs')
+const path = require('path')
 const OpenAI = require('openai')
 const { MongoClient, ObjectId } = require('mongodb')
 
@@ -14,25 +13,84 @@ const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY })
 
 let db
 let recordatoriosCol
+let sesionCol
 let client
 
+const SESSION_PATH = '/tmp/.wwebjs_auth'
+
 async function conectarMongo() {
-    // ✅ Conexión nativa para recordatorios
     const clienteMongo = new MongoClient(process.env.MONGODB_URI)
     await clienteMongo.connect()
     db = clienteMongo.db('wsp-bot')
     recordatoriosCol = db.collection('recordatorios')
+    sesionCol = db.collection('sesion_wsp')
 
     await recordatoriosCol.createIndex({ numero: 1 })
     await recordatoriosCol.createIndex({ enviado: 1, tiempo: 1 })
 
-    // ✅ Conexión mongoose para sesión de WhatsApp
-    // ✅ Especificar la base de datos explícitamente
-    await mongoose.connect(process.env.MONGODB_URI, {
-        dbName: 'wsp-bot'
-    })
-
     console.log('✅ MongoDB conectado!')
+}
+
+// ✅ Guardar sesión en MongoDB
+async function guardarSesionEnMongo() {
+    try {
+        if (!fs.existsSync(SESSION_PATH)) return
+
+        const archivos = {}
+        const leerDirectorio = (dir, base = '') => {
+            const items = fs.readdirSync(dir)
+            for (const item of items) {
+                const fullPath = path.join(dir, item)
+                const relativePath = base ? `${base}/${item}` : item
+                if (fs.statSync(fullPath).isDirectory()) {
+                    leerDirectorio(fullPath, relativePath)
+                } else {
+                    archivos[relativePath] = fs.readFileSync(fullPath).toString('base64')
+                }
+            }
+        }
+
+        leerDirectorio(SESSION_PATH)
+
+        await sesionCol.updateOne(
+            { _id: 'sesion' },
+            { $set: { archivos, updatedAt: new Date() } },
+            { upsert: true }
+        )
+        console.log('✅ Sesión guardada en MongoDB!')
+    } catch (err) {
+        console.error('❌ Error guardando sesión:', err.message)
+    }
+}
+
+// ✅ Restaurar sesión desde MongoDB
+async function restaurarSesionDesdeMongo() {
+    try {
+        const doc = await sesionCol.findOne({ _id: 'sesion' })
+        if (!doc || !doc.archivos) {
+            console.log('ℹ️ No hay sesión guardada en MongoDB')
+            return false
+        }
+
+        if (!fs.existsSync(SESSION_PATH)) {
+            fs.mkdirSync(SESSION_PATH, { recursive: true })
+        }
+
+        for (const [relativePath, contenidoBase64] of Object.entries(doc.archivos)) {
+            const fullPath = path.join(SESSION_PATH, relativePath)
+            const dir = path.dirname(fullPath)
+            if (!fs.existsSync(dir)) {
+                fs.mkdirSync(dir, { recursive: true })
+            }
+            fs.writeFileSync(fullPath, Buffer.from(contenidoBase64, 'base64'))
+        }
+
+        console.log('✅ Sesión restaurada desde MongoDB!')
+        return true
+    } catch (err) {
+        console.error('❌ Error restaurando sesión:', err.message)
+        return false
+    }
 }
 
 function limpiarJSON(texto) {
@@ -186,7 +244,6 @@ async function procesarMensaje(msg, numero, texto) {
 
     const resultado = await interpretarMensaje(texto, repetitivosActivos)
 
-    // ✅ Recordatorio normal
     if (resultado.tipo === 'normal') {
         const cantidad = await recordatoriosCol.countDocuments({
             numero,
@@ -220,7 +277,6 @@ async function procesarMensaje(msg, numero, texto) {
         return
     }
 
-    // ✅ Recordatorio repetitivo
     if (resultado.tipo === 'repetitivo') {
         const plantilla = {
             numero,
@@ -244,7 +300,6 @@ async function procesarMensaje(msg, numero, texto) {
         }
 
         plantilla.tiempo = proximoTiempo
-
         await recordatoriosCol.insertOne(plantilla)
 
         const dias = resultado.diasSemana.includes('todos')
@@ -262,7 +317,6 @@ async function procesarMensaje(msg, numero, texto) {
         return
     }
 
-    // ✅ Saltar días
     if (resultado.tipo === 'saltar') {
         const repetitivos = await recordatoriosCol.find({
             numero,
@@ -281,7 +335,6 @@ async function procesarMensaje(msg, numero, texto) {
         }
 
         const fechasSaltar = resultado.fechasSaltar.map(f => new Date(f).getTime())
-
         await recordatoriosCol.updateOne(
             { _id: encontrado._id },
             { $push: { diasSaltar: { $each: fechasSaltar } } }
@@ -304,7 +357,6 @@ async function procesarMensaje(msg, numero, texto) {
         return
     }
 
-    // ✅ Cancelar repetitivo completo
     if (resultado.tipo === 'cancelar_repetitivo') {
         const repetitivos = await recordatoriosCol.find({
             numero,
@@ -331,7 +383,6 @@ async function procesarMensaje(msg, numero, texto) {
         return
     }
 
-    // ✅ No es recordatorio
     if (resultado.tipo === 'error') {
         msg.reply('No entendí eso como un recordatorio 🤔\n\nPuedes decirme algo como:\n"recuérdame en 30 minutos tomar agua"\n"recuérdame a las 7pm llamar al médico"\n"todos los días a las 9am recuérdame hacer ejercicio"\n"de lunes a viernes a las 8am recuérdame la reunión"\n"mañana no me recuerdes la reunión"\n\nO usa *!lista* para ver tus recordatorios.')
         return
@@ -341,19 +392,12 @@ async function procesarMensaje(msg, numero, texto) {
 async function iniciar() {
     await conectarMongo()
 
-    // ✅ Crear carpeta temporal si no existe
-    const authPath = '/tmp/.wwebjs_auth'
-    if (!fs.existsSync(authPath)) {
-        fs.mkdirSync(authPath, { recursive: true })
-    }
-
-    const store = new MongoStore({ mongoose })
+    // ✅ Restaurar sesión desde MongoDB antes de iniciar
+    await restaurarSesionDesdeMongo()
 
     client = new Client({
-        authStrategy: new RemoteAuth({
-            store,
-            backupSyncIntervalMs: 300000,
-            dataPath: '/tmp' // ✅ cambiar a solo /tmp
+        authStrategy: new LocalAuth({
+            dataPath: SESSION_PATH
         }),
         puppeteer: {
             headless: true,
@@ -396,26 +440,20 @@ async function iniciar() {
         }
     }, 10000)
 
+    // ✅ Guardar sesión en MongoDB cada 5 minutos
+    setInterval(async () => {
+        await guardarSesionEnMongo()
+    }, 5 * 60 * 1000)
+
     client.on('qr', (qr) => {
         const qrUrl = `https://api.qrserver.com/v1/create-qr-code/?size=300x300&data=${encodeURIComponent(qr)}`
         console.log('📱 Escanea el QR aquí:', qrUrl)
     })
 
-    client.on('ready', () => {
+    client.on('ready', async () => {
         console.log('✅ Bot conectado!')
-    })
-
-    client.on('remote_session_saved', () => {
-    console.log('✅ Sesión guardada en MongoDB!')
-})
-
-    // ✅ Capturar errores no manejados para que no crashee el bot
-    process.on('unhandledRejection', (err) => {
-        if (err.code === 'ENOENT' && err.path?.includes('RemoteAuth.zip')) {
-            console.log('⚠️ Error menor de sesión ignorado, bot sigue funcionando')
-            return
-        }
-        console.error('❌ Error no manejado:', err)
+        // ✅ Guardar sesión inmediatamente cuando conecta
+        await guardarSesionEnMongo()
     })
 
     client.on('message_reaction', async (reaction) => {
@@ -607,11 +645,20 @@ async function iniciar() {
         }
     })
 
+    process.on('unhandledRejection', (err) => {
+        console.error('❌ Error no manejado:', err.message)
+    })
+
+    process.on('uncaughtException', (err) => {
+        console.error('❌ Error no capturado:', err.message)
+    })
+
     client.initialize()
 }
 
 process.on('SIGINT', async () => {
     console.log('🛑 Cerrando bot...')
+    await guardarSesionEnMongo()
     await client.destroy()
     process.exit(0)
 })
