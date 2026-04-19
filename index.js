@@ -403,7 +403,16 @@ async function iniciar() {
     })
 
     client.on('remote_session_saved', () => {
-        console.log('✅ Sesión guardada en MongoDB!')
+    console.log('✅ Sesión guardada en MongoDB!')
+})
+
+    // ✅ Capturar errores no manejados para que no crashee el bot
+    process.on('unhandledRejection', (err) => {
+        if (err.code === 'ENOENT' && err.path?.includes('RemoteAuth.zip')) {
+            console.log('⚠️ Error menor de sesión ignorado, bot sigue funcionando')
+            return
+        }
+        console.error('❌ Error no manejado:', err)
     })
 
     client.on('message_reaction', async (reaction) => {
