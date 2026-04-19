@@ -27,7 +27,10 @@ async function conectarMongo() {
     await recordatoriosCol.createIndex({ enviado: 1, tiempo: 1 })
 
     // ✅ Conexión mongoose para sesión de WhatsApp
-    await mongoose.connect(process.env.MONGODB_URI)
+    // ✅ Especificar la base de datos explícitamente
+    await mongoose.connect(process.env.MONGODB_URI, {
+        dbName: 'wsp-bot'
+    })
 
     console.log('✅ MongoDB conectado!')
 }
