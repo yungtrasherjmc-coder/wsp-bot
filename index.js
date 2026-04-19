@@ -480,14 +480,6 @@ async function iniciar() {
     await conectarMongo()
     await restaurarSesionDesdeMongo()
 
-    // 🔍 Debug temporal
-    if (fs.existsSync('/tmp')) {
-        console.log('📁 /tmp:', fs.readdirSync('/tmp'))
-    }
-    if (fs.existsSync('/tmp/.wwebjs_auth')) {
-        console.log('📁 .wwebjs_auth:', fs.readdirSync('/tmp/.wwebjs_auth'))
-    }
-
     client = new Client({
         authStrategy: new LocalAuth({
             dataPath: '/tmp',
@@ -546,13 +538,6 @@ async function iniciar() {
 
     client.on('ready', async () => {
         console.log('✅ Bot conectado!')
-        
-        // 🔍 Ver qué carpetas creó LocalAuth
-        console.log('📁 /tmp:', fs.readdirSync('/tmp'))
-        if (fs.existsSync('/tmp/session-bot')) {
-            console.log('📁 session-bot:', fs.readdirSync('/tmp/session-bot'))
-        }
-        
         await guardarSesionEnMongo()
     })
 
