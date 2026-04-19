@@ -16,7 +16,7 @@ let recordatoriosCol
 let sesionCol
 let client
 
-const SESSION_PATH = '/tmp/.wwebjs_auth'
+const SESSION_PATH = '/tmp/session-bot'
 
 async function conectarMongo() {
     const clienteMongo = new MongoClient(process.env.MONGODB_URI)
@@ -391,13 +391,20 @@ async function procesarMensaje(msg, numero, texto) {
 
 async function iniciar() {
     await conectarMongo()
-
-    // ✅ Restaurar sesión desde MongoDB antes de iniciar
     await restaurarSesionDesdeMongo()
+
+    // 🔍 Debug temporal
+    if (fs.existsSync('/tmp')) {
+        console.log('📁 /tmp:', fs.readdirSync('/tmp'))
+    }
+    if (fs.existsSync('/tmp/.wwebjs_auth')) {
+        console.log('📁 .wwebjs_auth:', fs.readdirSync('/tmp/.wwebjs_auth'))
+    }
 
     client = new Client({
         authStrategy: new LocalAuth({
-            dataPath: SESSION_PATH
+            dataPath: '/tmp',
+            clientId: 'bot'
         }),
         puppeteer: {
             headless: true,
