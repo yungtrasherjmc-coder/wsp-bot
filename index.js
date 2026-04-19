@@ -34,15 +34,36 @@ async function conectarMongo() {
 // ✅ Archivos de Chrome que no necesitamos guardar
 const ARCHIVOS_IGNORAR = [
     'SingletonCookie',
-    'SingletonLock', 
+    'SingletonLock',
     'SingletonSocket',
     'DevToolsActivePort',
     'BrowserMetrics-spare.pma',
     'GPUPersistentCache',
-    'GraphiteDawnCache'
+    'GraphiteDawnCache',
+    'HistorySearch',
+    'OnDeviceHeadSuggestModel',
+    'WasmTtsEngine',
+    'WidevineCdm',
+    'component_crx_cache',
+    'extensions_crx_cache',
+    'segmentation_platform',
+    'hyphen-data',
+    'ZxcvbnData',
+    'Variations',
+    'TranslateKit',
+    'Subresource Filter',
+    'Safe Browsing',
+    'OriginTrials',
+    'PKIMetadata',
+    'PKIMetadataFastpush',
+    'MEIPreload',
+    'first_party_sets.db',
+    'first_party_sets.db-journal'
 ]
 
-// ✅ Guardar sesión en MongoDB
+// ✅ Tamaño máximo por archivo: 1MB
+const MAX_FILE_SIZE = 1 * 1024 * 1024
+
 async function guardarSesionEnMongo() {
     try {
         if (!fs.existsSync(SESSION_PATH)) {
@@ -54,7 +75,6 @@ async function guardarSesionEnMongo() {
         const leerDirectorio = (dir, base = '') => {
             const items = fs.readdirSync(dir)
             for (const item of items) {
-                // ✅ Ignorar archivos de sistema de Chrome
                 if (ARCHIVOS_IGNORAR.includes(item)) continue
 
                 const fullPath = path.join(dir, item)
@@ -65,16 +85,22 @@ async function guardarSesionEnMongo() {
                     if (stat.isDirectory()) {
                         leerDirectorio(fullPath, relativePath)
                     } else {
+                        // ✅ Ignorar archivos mayores a 1MB
+                        if (stat.size > MAX_FILE_SIZE) {
+                            console.log(`⚠️ Archivo muy grande ignorado: ${relativePath} (${Math.round(stat.size / 1024)}KB)`)
+                            continue
+                        }
                         archivos[relativePath] = fs.readFileSync(fullPath).toString('base64')
                     }
                 } catch (e) {
-                    // ✅ Ignorar archivos que no se pueden leer
                     console.log(`⚠️ Ignorando archivo: ${relativePath}`)
                 }
             }
         }
 
         leerDirectorio(SESSION_PATH)
+
+        console.log(`📦 Guardando ${Object.keys(archivos).length} archivos en MongoDB...`)
 
         await sesionCol.updateOne(
             { _id: 'sesion' },
