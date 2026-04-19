@@ -459,7 +459,13 @@ async function iniciar() {
 
     client.on('ready', async () => {
         console.log('✅ Bot conectado!')
-        // ✅ Guardar sesión inmediatamente cuando conecta
+        
+        // 🔍 Ver qué carpetas creó LocalAuth
+        console.log('📁 /tmp:', fs.readdirSync('/tmp'))
+        if (fs.existsSync('/tmp/session-bot')) {
+            console.log('📁 session-bot:', fs.readdirSync('/tmp/session-bot'))
+        }
+        
         await guardarSesionEnMongo()
     })
 
