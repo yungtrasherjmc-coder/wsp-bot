@@ -31,21 +31,45 @@ async function conectarMongo() {
     console.log('✅ MongoDB conectado!')
 }
 
+// ✅ Archivos de Chrome que no necesitamos guardar
+const ARCHIVOS_IGNORAR = [
+    'SingletonCookie',
+    'SingletonLock', 
+    'SingletonSocket',
+    'DevToolsActivePort',
+    'BrowserMetrics-spare.pma',
+    'GPUPersistentCache',
+    'GraphiteDawnCache'
+]
+
 // ✅ Guardar sesión en MongoDB
 async function guardarSesionEnMongo() {
     try {
-        if (!fs.existsSync(SESSION_PATH)) return
+        if (!fs.existsSync(SESSION_PATH)) {
+            console.log('⚠️ No existe carpeta de sesión')
+            return
+        }
 
         const archivos = {}
         const leerDirectorio = (dir, base = '') => {
             const items = fs.readdirSync(dir)
             for (const item of items) {
+                // ✅ Ignorar archivos de sistema de Chrome
+                if (ARCHIVOS_IGNORAR.includes(item)) continue
+
                 const fullPath = path.join(dir, item)
                 const relativePath = base ? `${base}/${item}` : item
-                if (fs.statSync(fullPath).isDirectory()) {
-                    leerDirectorio(fullPath, relativePath)
-                } else {
-                    archivos[relativePath] = fs.readFileSync(fullPath).toString('base64')
+
+                try {
+                    const stat = fs.statSync(fullPath)
+                    if (stat.isDirectory()) {
+                        leerDirectorio(fullPath, relativePath)
+                    } else {
+                        archivos[relativePath] = fs.readFileSync(fullPath).toString('base64')
+                    }
+                } catch (e) {
+                    // ✅ Ignorar archivos que no se pueden leer
+                    console.log(`⚠️ Ignorando archivo: ${relativePath}`)
                 }
             }
         }
